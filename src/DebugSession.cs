@@ -382,6 +382,8 @@ namespace VSCodeDebug
 				}
 			}
 			catch (Exception e) {
+				Console.WriteLine(e.Message);
+				Console.WriteLine(e.StackTrace);
 				SendErrorResponse(response, 1104, "error while processing request '{_request}' (exception: {_exception})", new { _request = command, _exception = e.Message });
 			}
 

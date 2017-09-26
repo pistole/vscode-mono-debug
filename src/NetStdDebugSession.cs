@@ -32,7 +32,7 @@ namespace VSCodeDebug
 		private AutoResetEvent _resumeEvent = new AutoResetEvent(false);
 		private bool _debuggeeExecuting = false;
 		private readonly object _lock = new object();
-		private MDbgEngine _session;
+		private static MDbgEngine _session;
 		private volatile bool _debuggeeKilled = true;
 		private MDbgProcess _activeProcess;
 		private MDbgFrame _activeFrame;
@@ -52,9 +52,12 @@ namespace VSCodeDebug
 		private bool _terminated = false;
 		private bool _stderrEOF = true;
 		private bool _stdoutEOF = true;
-		private DefaultExpressionParser _expressionParser = new DefaultExpressionParser();
 
-
+	public static MDbgEngine Debugger{
+		get {
+			return _session;
+		}
+	}
 
     private void Processes_ProcessAdded(object sender, ProcessCollectionChangedEventArgs e)
     {
@@ -470,7 +473,7 @@ namespace VSCodeDebug
 						{
 							bp.Delete();
 						}
-						_session.Processes.Active.Go();
+						_session.Processes.Active.Go().WaitOne();
 						_session = null;
 					}
 				}
@@ -499,7 +502,7 @@ namespace VSCodeDebug
 			SendResponse(response);
 			lock (_lock) {
 				if (_session != null && !_session.Processes.Active.IsRunning && _session.Processes.Active.IsAlive) {
-					_session.Processes.Active.Go();
+					_session.Processes.Active.Go().WaitOne();
 					_debuggeeExecuting = true;
 				}
 			}
@@ -669,6 +672,10 @@ namespace VSCodeDebug
 					}
 
 					var frameHandle = _frameHandles.Create(frame);
+					Console.WriteLine(frameHandle);
+					Console.WriteLine(frame.Number);
+					Console.WriteLine(frame.GetHashCode());
+					Console.WriteLine("---");
 					string name = frame.Function.FullName;
 					int line = frame.SourcePosition.Line;
 					stackFrames.Add(new StackFrame(frameHandle, name, source, ConvertDebuggerLineToClient(line), 0, hint));
@@ -686,9 +693,16 @@ namespace VSCodeDebug
 
 			int frameId = getInt(args, "frameId", 0);
 			var frame = _frameHandles.Get(frameId, null);
-			
-			var scopes = new List<Scope>();
 
+			Console.WriteLine(_session.Processes.Active.Threads.Active.Id);
+
+			var scopes = new List<Scope>();
+			if (!_session.Processes.Active.Threads.Active.Frames.Any(x => x == frame))
+			{
+				Console.WriteLine("Frame not found!! " +frameId);
+				SendResponse(response, new ScopesResponseBody(scopes));
+				return;			
+			}
 			if (frame.Number == 0 && _exception != null) {
 				scopes.Add(new Scope("Exception", _variableHandles.Create(new MDbgValue[] { _exception })));
 			}
@@ -785,37 +799,22 @@ namespace VSCodeDebug
 				CorEval eval = _session.Processes.Active.Threads.Active.Get<ManagedThread>().CorThread.CreateEval();
 				List<CorValue> corValueList = new List<CorValue>();
 				if (frame != null) {
-					if (true) { // frame.ValidateExpression(expression)) {
-						// var val = frame.GetExpressionValue(expression, _debuggerSessionOptions.EvaluationOptions);
-						var val = _expressionParser.ParseExpression2(expression, _session.Processes.Active, frame);
-						val.WaitHandle.WaitOne();
+					Console.WriteLine(expression);
 
-						// var flags = val.Flags;
-						// if (flags.HasFlag(MDbgValueFlags.Error) || flags.HasFlag(MDbgValueFlags.NotSupported)) {
-						// 	error = val.DisplayValue;
-						// 	if (error.IndexOf("reference not available in the current evaluation context") > 0) {
-						// 		error = "not available";
-						// 	}
-						// }
-						// else if (flags.HasFlag(MDbgValueFlags.Unknown)) {
-						// 	error = "invalid expression";
-						// }
-						// else if (flags.HasFlag(MDbgValueFlags.Object) && flags.HasFlag(MDbgValueFlags.Namespace)) {
-						// 	error = "not available";
-						// }
-						// else 
-						{
-							int handle = 0;
-							// if (val.HasChildren) {
-							// 	handle = _variableHandles.Create(val.GetAllChildren());
-							// }
-							SendResponse(response, new EvaluateResponseBody(val, handle));
-							return;
-						}
+					var val = _session.Processes.Active.ResolveVariable(expression, frame);
+					var stringValue = "<N/A>";
+					int handle = 0;
+					if (val != null)
+					{
+						var mval = val as ManagedValue;
+						var wrapped = CreateVariable(mval);
+						stringValue = wrapped.value;
+						handle = wrapped.variablesReference;
+					} else if (val != null) {
+						stringValue = val.ToString();
 					}
-					else {
-						error = "invalid expression";
-					}
+					SendResponse(response, new EvaluateResponseBody(stringValue, handle));
+					return;
 				}
 				else {
 					error = "no active stackframe";
@@ -824,7 +823,6 @@ namespace VSCodeDebug
 			SendErrorResponse(response, 3014, "Evaluate request failed ({_reason}).", new { _reason = error } );
 		}
 
-		//---- private ------------------------------------------
 
 		private void SetExceptionBreakpoints(dynamic exceptionOptions)
 		{
@@ -1064,240 +1062,6 @@ namespace VSCodeDebug
 			}
 		}
 	}
-	    public class DefaultExpressionParser : IExpressionParser
-    {
-      private Dictionary<string, DefaultExpressionParser.PrimitiveType> m_primitiveTypes;
 
-      public DefaultExpressionParser()
-      {
-        this.InitPrimitiveTypes();
-      }
-
-      public ManagedValue ParseExpression(string variableName, MDbgProcess process, MDbgFrame scope)
-      {
-        return process.ResolveVariable(variableName, scope);
-      }
-
-      public object ParseExpression2(string value, MDbgProcess process, MDbgFrame scope)
-      {
-        if (value.Length == 0)
-          return (object) null;
-        object result;
-        if (this.TryCreatePrimitiveValue(value, out result))
-          return result;
-        if ((int) value[0] == 34 && (int) value[value.Length - 1] == 34)
-          return (object) DefaultExpressionParser.CreateString(value);
-        if (value == "null")
-          return (object) DefaultExpressionParser.CreateNull();
-        ManagedValue managedValue = process.ResolveVariable(value, scope);
-        if (managedValue != null)
-          return (object) managedValue.CorValue;
-        return (object) null;
-      }
-
-      public bool TryCreatePrimitiveValue(string input, out object result)
-      {
-        result = (object) null;
-        object obj = (object) null;
-        DefaultExpressionParser.PrimitiveType? nullable = new DefaultExpressionParser.PrimitiveType?();
-        if ((int) input[0] == 40)
-        {
-          int num = input.IndexOf(')');
-          if (num == -1)
-            return false;
-          string key = input.Substring(1, num - 1).Trim();
-          if (this.m_primitiveTypes.ContainsKey(key))
-          {
-            nullable = new DefaultExpressionParser.PrimitiveType?(this.m_primitiveTypes[key]);
-            input = input.Substring(num + 1);
-          }
-        }
-        DefaultExpressionParser.PrimitiveType type;
-        if (!this.TryParsePrimitiveLiteral(input, out type, out obj))
-          return false;
-        if (nullable.HasValue)
-        {
-          try
-          {
-            obj = Convert.ChangeType(obj, nullable.Value.type, (IFormatProvider) CultureInfo.InvariantCulture);
-            type = nullable.Value;
-          }
-          catch (InvalidCastException ex)
-          {
-            return false;
-          }
-        }
-        result = obj;
-        return true;
-      }
-
-      public static CorReferenceValue CreateNull()
-      {
-        CommandBase.Debugger.Processes.Active.Threads.Active.Get<ManagedThread>().CorThread.CreateEval().CreateValue(Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_CLASS, (CorClass) null);
-        CommandBase.Debugger.Processes.Active.Go().WaitOne();
-        if (!(CommandBase.Debugger.Processes.Active.StopReason is EvalCompleteStopReason))
-          throw new MDbgShellException("Wrong stop reason when creating string!");
-        return (CommandBase.Debugger.Processes.Active.StopReason as EvalCompleteStopReason).Eval.Result.CastToReferenceValue();
-      }
-
-      public static CorReferenceValue CreateString(string value)
-      {
-        if (value.Length < 2 || !value.StartsWith("\"") || !value.EndsWith("\""))
-          throw new MDbgShellException("Cannot create string; input is not in correct format. Input must be surrounded by quotation marks.");
-        string str;
-        if (!DefaultExpressionParser.TryParseCharacterLiteral(value.Substring(1, value.Length - 2), out str))
-          throw new MDbgShellException("Invalid string literal");
-        CommandBase.Debugger.Processes.Active.Threads.Active.Get<ManagedThread>().CorThread.CreateEval().NewString(str);
-        CommandBase.Debugger.Processes.Active.Go().WaitOne();
-        if (!(CommandBase.Debugger.Processes.Active.StopReason is EvalCompleteStopReason))
-          throw new MDbgShellException("Wrong stop reason when creating string!");
-        return (CommandBase.Debugger.Processes.Active.StopReason as EvalCompleteStopReason).Eval.Result.CastToReferenceValue();
-      }
-
-      private static bool TryParseCharacterLiteral(string input, out string value)
-      {
-        value = (string) null;
-        if (input == null)
-          return false;
-        StringBuilder stringBuilder = new StringBuilder();
-        for (int index = 0; index < input.Length; ++index)
-        {
-          if ((int) input[index] != 92)
-          {
-            stringBuilder.Append(input[index]);
-          }
-          else
-          {
-            ++index;
-            if (input.Length <= index)
-              return false;
-            if ((int) input[index] == 97)
-              stringBuilder.Append('\a');
-            else if ((int) input[index] == 98)
-              stringBuilder.Append('\b');
-            else if ((int) input[index] == 102)
-              stringBuilder.Append('\f');
-            else if ((int) input[index] == 110)
-              stringBuilder.Append('\n');
-            else if ((int) input[index] == 114)
-              stringBuilder.Append('\r');
-            else if ((int) input[index] == 116)
-              stringBuilder.Append('\t');
-            else if ((int) input[index] == 118)
-              stringBuilder.Append('\v');
-            else if ((int) input[index] == 39)
-              stringBuilder.Append('\'');
-            else if ((int) input[index] == 34)
-              stringBuilder.Append('"');
-            else if ((int) input[index] == 92)
-              stringBuilder.Append('\\');
-            else if ((int) input[index] == 63)
-            {
-              stringBuilder.Append('?');
-            }
-            else
-            {
-              int result;
-              if ((int) input[index] != 120 || input.Length <= index + 4 || !int.TryParse(input.Substring(index + 1, 4), NumberStyles.AllowHexSpecifier, (IFormatProvider) CultureInfo.InvariantCulture, out result))
-                return false;
-              stringBuilder.Append((char) result);
-              index += 4;
-            }
-          }
-        }
-        value = stringBuilder.ToString();
-        return true;
-      }
-
-      private bool TryParsePrimitiveLiteral(string input, out DefaultExpressionParser.PrimitiveType type, out object value)
-      {
-        type = this.m_primitiveTypes["bool"];
-        value = (object) null;
-        if (input.Length == 0)
-          return false;
-        if ((int) input[0] == 39 && (int) input[input.Length - 1] == 39 && input.Length >= 3)
-        {
-          string str;
-          if (!DefaultExpressionParser.TryParseCharacterLiteral(input.Substring(1, input.Length - 2), out str) || str == null || str.Length != 1)
-            return false;
-          type = this.m_primitiveTypes["char"];
-          value = (object) str[0];
-          return true;
-        }
-        int result1;
-        if (int.TryParse(input, NumberStyles.Any, (IFormatProvider) CultureInfo.InvariantCulture, out result1))
-        {
-          type = this.m_primitiveTypes["int"];
-          value = (object) result1;
-          return true;
-        }
-        double result2;
-        if (double.TryParse(input, NumberStyles.Any, (IFormatProvider) CultureInfo.InvariantCulture, out result2))
-        {
-          type = this.m_primitiveTypes["double"];
-          value = (object) result2;
-          return true;
-        }
-        bool result3;
-        if (!bool.TryParse(input, out result3))
-          return false;
-        type = this.m_primitiveTypes["bool"];
-        value = (object) result3;
-        return true;
-      }
-
-      private void InitPrimitiveTypes()
-      {
-        this.m_primitiveTypes = new Dictionary<string, DefaultExpressionParser.PrimitiveType>();
-        DefaultExpressionParser.PrimitiveType primitiveType1 = new DefaultExpressionParser.PrimitiveType(typeof (sbyte), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_I1);
-        this.m_primitiveTypes.Add("sbyte", primitiveType1);
-        this.m_primitiveTypes.Add("System.SByte", primitiveType1);
-        DefaultExpressionParser.PrimitiveType primitiveType2 = new DefaultExpressionParser.PrimitiveType(typeof (byte), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_U1);
-        this.m_primitiveTypes.Add("byte", primitiveType2);
-        this.m_primitiveTypes.Add("System.Byte", primitiveType2);
-        DefaultExpressionParser.PrimitiveType primitiveType3 = new DefaultExpressionParser.PrimitiveType(typeof (short), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_I2);
-        this.m_primitiveTypes.Add("short", primitiveType3);
-        this.m_primitiveTypes.Add("System.Int16", primitiveType3);
-        DefaultExpressionParser.PrimitiveType primitiveType4 = new DefaultExpressionParser.PrimitiveType(typeof (int), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_I4);
-        this.m_primitiveTypes.Add("int", primitiveType4);
-        this.m_primitiveTypes.Add("System.Int32", primitiveType4);
-        DefaultExpressionParser.PrimitiveType primitiveType5 = new DefaultExpressionParser.PrimitiveType(typeof (long), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_I8);
-        this.m_primitiveTypes.Add("long", primitiveType5);
-        this.m_primitiveTypes.Add("System.Int64", primitiveType5);
-        DefaultExpressionParser.PrimitiveType primitiveType6 = new DefaultExpressionParser.PrimitiveType(typeof (ushort), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_U2);
-        this.m_primitiveTypes.Add("ushort", primitiveType6);
-        this.m_primitiveTypes.Add("System.UInt16", primitiveType6);
-        DefaultExpressionParser.PrimitiveType primitiveType7 = new DefaultExpressionParser.PrimitiveType(typeof (uint), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_U4);
-        this.m_primitiveTypes.Add("uint", primitiveType7);
-        this.m_primitiveTypes.Add("System.UInt32", primitiveType7);
-        DefaultExpressionParser.PrimitiveType primitiveType8 = new DefaultExpressionParser.PrimitiveType(typeof (ulong), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_U8);
-        this.m_primitiveTypes.Add("ulong", primitiveType8);
-        this.m_primitiveTypes.Add("System.UInt64", primitiveType8);
-        DefaultExpressionParser.PrimitiveType primitiveType9 = new DefaultExpressionParser.PrimitiveType(typeof (float), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_R4);
-        this.m_primitiveTypes.Add("float", primitiveType9);
-        this.m_primitiveTypes.Add("System.Single", primitiveType9);
-        DefaultExpressionParser.PrimitiveType primitiveType10 = new DefaultExpressionParser.PrimitiveType(typeof (double), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_R8);
-        this.m_primitiveTypes.Add("double", primitiveType10);
-        this.m_primitiveTypes.Add("System.Double", primitiveType10);
-        DefaultExpressionParser.PrimitiveType primitiveType11 = new DefaultExpressionParser.PrimitiveType(typeof (bool), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_BOOLEAN);
-        this.m_primitiveTypes.Add("bool", primitiveType11);
-        this.m_primitiveTypes.Add("System.Boolean", primitiveType11);
-        DefaultExpressionParser.PrimitiveType primitiveType12 = new DefaultExpressionParser.PrimitiveType(typeof (char), Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType.ELEMENT_TYPE_CHAR);
-        this.m_primitiveTypes.Add("char", primitiveType12);
-        this.m_primitiveTypes.Add("System.Char", primitiveType12);
-      }
-
-      private struct PrimitiveType
-      {
-        public Type type;
-        public Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType elementType;
-
-        public PrimitiveType(Type type, Microsoft.Samples.Debugging.CorDebug.NativeApi.CorElementType elementType)
-        {
-          this.type = type;
-          this.elementType = elementType;
-        }
-      }
-    }
 
 }
