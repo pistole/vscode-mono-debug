@@ -14,6 +14,9 @@ using Microsoft.Samples.Debugging.MdbgEngine;
 using Microsoft.Samples.Debugging.CorDebug;
 using Microsoft.Samples.Debugging.CorDebug.NativeApi;
 using Microsoft.Samples.Tools.Mdbg;
+using System.Reflection;
+using System.Runtime.InteropServices;
+
 namespace VSCodeDebug
 {
 	public class NetStdDebugSession : DebugSession
@@ -154,7 +157,6 @@ namespace VSCodeDebug
 
 			
 			_session = new MDbgEngine();
-
 			_breakpoints = new SortedDictionary<long, MDbgBreakpoint>();
 			_catchpoints = new List<string>();
 
@@ -353,8 +355,9 @@ namespace VSCodeDebug
 				}
 				localProcess.DebugMode = DebugModeFlag.Default;
 				localProcess.NgenPolicy = NgenPolicyFlags.Default;
-				// Utilities.ConcatArgs(cmdLine.Skip(1).ToArray())
-				localProcess.CreateProcess(cmdLine[0], string.Empty);
+				var cmdArgs = Utilities.ConcatArgs(cmdLine.Skip(1).ToArray());
+				localProcess.CreateProcess(cmdLine[0], cmdArgs, workingDirectory);
+
 				if (locationList != null)
 				{
 					foreach (ILocation location in locationList)
@@ -578,22 +581,25 @@ namespace VSCodeDebug
 			}
 
 			var clientLines = args.lines.ToObject<int[]>();
-			HashSet<int> lin = new HashSet<int>();
+			var modulePath = path;
+			HashSet<ManagedBoundFunctionAndOffsetLocation> lin = new HashSet<ManagedBoundFunctionAndOffsetLocation>();
 			for (int i = 0; i < clientLines.Length; i++) {
-				lin.Add(ConvertClientLineToDebugger(clientLines[i]));
+				var loc = new LineNumberLocation(path, clientLines[i]);
+				var mbp = bindBreakpoint(loc);
+				modulePath = mbp.Function.Module.FileName;
+				lin.Add(mbp);
 			}
 
 			// find all breakpoints for the given path and remember their id and line number
-			var bpts = new List<Tuple<int, int>>();
+			var bpts = new List<Tuple<int, ManagedBoundFunctionAndOffsetLocation>>();
 			foreach (var be in _breakpoints) {
 				var bp = be.Value;
-				var lineNumberLocation = bp.Location as LineNumberLocation;
-				if (lineNumberLocation != null && lineNumberLocation.FilePath == path) {
-					bpts.Add(new Tuple<int,int>((int)be.Key, lineNumberLocation.LineNumber));
+				var loc = bp.Location as ManagedBoundFunctionAndOffsetLocation;
+				if (loc != null && loc.Function.Module.FileName == modulePath ) {
+					bpts.Add(new Tuple<int,ManagedBoundFunctionAndOffsetLocation>((int)be.Key, loc));
 				}
 			}
-
-			HashSet<int> lin2 = new HashSet<int>();
+			HashSet<ManagedBoundFunctionAndOffsetLocation> lin2 = new HashSet<ManagedBoundFunctionAndOffsetLocation>();
 			foreach (var bpt in bpts) {
 				if (lin.Contains(bpt.Item2)) {
 					lin2.Add(bpt.Item2);
@@ -611,10 +617,14 @@ namespace VSCodeDebug
 
 			for (int i = 0; i < clientLines.Length; i++) {
 				var l = ConvertClientLineToDebugger(clientLines[i]);
-				if (!lin2.Contains(l)) {
+				var loc = new LineNumberLocation(path, l);
+				var mbp = bindBreakpoint(loc);
+
+				if (!lin2.Contains(mbp)) {
 					var id = _nextBreakpointId++;
-					var b = _session.Processes.Active.Breakpoints.CreateBreakpoint(path, l, true);
+					var b = _session.Processes.Active.Breakpoints.CreateBreakpoint(mbp, true);
 					_breakpoints.Add(id, b);
+
 					// Program.Log("added bpt #{0} for line {1}", id, l);
 				}
 			}
@@ -626,6 +636,81 @@ namespace VSCodeDebug
 
 			SendResponse(response, new SetBreakpointsResponseBody(breakpoints));
 		}
+
+
+
+		protected bool TryBindToModuleWorker(ManagedModule managedModule, LineNumberLocation loc, out ManagedBoundFunctionAndOffsetLocation resolvedLocation, out string bindFailedReason)
+		{
+			resolvedLocation = (ManagedBoundFunctionAndOffsetLocation) null;
+			bindFailedReason = (string) null;
+			if (managedModule.SymReader == null)
+			{
+				bindFailedReason = "No symbols loaded";
+				return false;
+			}
+			bool flag = false;
+			foreach (var document in managedModule.SymReader.GetDocuments())
+			{
+				if (string.Compare(Path.GetFileName(document.URL), Path.GetFileName(loc.FilePath), true, CultureInfo.InvariantCulture) == 0)
+				{
+					int num = 0;
+					flag = true;
+					try
+					{
+						num = document.FindClosestLine(loc.LineNumber);
+					}
+					catch (COMException ex)
+					{
+						if (ex.ErrorCode == -2147467259)
+							continue;
+					}
+					var documentPosition = managedModule.SymReader.GetMethodFromDocumentPosition(document, num, 0);
+					ManagedFunction function1 = managedModule.GetFunction(documentPosition.Token.GetToken());
+					int ipFromPosition1; 
+					
+					if (!function1.GetIPFromLine(num, out ipFromPosition1))
+					{
+						foreach (Type nestedType in function1.MethodInfo.DeclaringType.GetNestedTypes())
+						{
+							foreach (MethodInfo method in nestedType.GetMethods())
+							{
+								ManagedFunction function2 = managedModule.GetFunction(method.MetadataToken);
+								int ipFromPosition2;
+								if (function2.GetIPFromLine(num, out ipFromPosition2))
+								{
+									resolvedLocation = new ManagedBoundFunctionAndOffsetLocation(function2, ipFromPosition2, OffsetKind.IL);
+									return true;
+								}
+							}
+					}
+					bindFailedReason = "Unable to determine IL offset from line number " + (object) num;
+					return false;
+				}
+				resolvedLocation = new ManagedBoundFunctionAndOffsetLocation(function1, ipFromPosition1, OffsetKind.IL);
+				return true;
+				}
+			}
+			bindFailedReason = !flag ? "Symbols did not have information for file " + loc.FilePath : "No information for line " + (object) loc.LineNumber;
+			return false;
+		}
+	
+
+		public ManagedBoundFunctionAndOffsetLocation bindBreakpoint(LineNumberLocation loc)
+		{
+
+			foreach (ManagedModule module in _session.Processes.Active.TemporaryDefaultManagedRuntime.Modules)
+			{
+				string err;
+				ManagedBoundFunctionAndOffsetLocation outval;
+				if(TryBindToModuleWorker(module, loc, out outval, out err))
+				{
+					return outval;
+				}
+			}
+
+			return null;			
+		}
+
 
 		public override void StackTrace(Response response, dynamic args)
 		{
