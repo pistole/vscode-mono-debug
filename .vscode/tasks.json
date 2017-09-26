@@ -5,7 +5,7 @@
 	"isBackground": true,
 	"showOutput": "always",
 	"args": [
-		"run", "watch"
+		"run"
 	],
 	"problemMatcher": "$tsc-watch"
 }

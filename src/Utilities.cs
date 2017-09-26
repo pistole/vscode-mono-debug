@@ -11,7 +11,6 @@ using System.Text.RegularExpressions;
 using System.Reflection;
 using System.Diagnostics;
 
-using Mono.Debugging.Client;
 
 namespace VSCodeDebug
 {
@@ -169,23 +168,23 @@ namespace VSCodeDebug
 		}
 	}
 
-	class CustomLogger : ICustomLogger
-	{
-		public void LogError(string message, Exception ex)
-		{
-		}
+	// class CustomLogger : ICustomLogger
+	// {
+	// 	public void LogError(string message, Exception ex)
+	// 	{
+	// 	}
 
-		public void LogAndShowException(string message, Exception ex)
-		{
-		}
+	// 	public void LogAndShowException(string message, Exception ex)
+	// 	{
+	// 	}
 
-		public void LogMessage(string format, params object[] args)
-		{
-		}
+	// 	public void LogMessage(string format, params object[] args)
+	// 	{
+	// 	}
 
-		public string GetNewDebuggerLogFilename()
-		{
-			return null;
-		}
-	}
+	// 	public string GetNewDebuggerLogFilename()
+	// 	{
+	// 		return null;
+	// 	}
+	// }
 }

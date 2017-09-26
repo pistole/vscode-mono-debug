@@ -282,7 +282,8 @@ namespace VSCodeDebug
 			if (args == null) {
 				args = new { };
 			}
-
+			Console.WriteLine(command);
+			Console.WriteLine(args);
 			try {
 				switch (command) {
 

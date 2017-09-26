@@ -11,7 +11,7 @@ namespace VSCodeDebug
 		private const int START_HANDLE = 1000;
 
 		private int _nextHandle;
-		private Dictionary<int, T> _handleMap;
+		public Dictionary<int, T> _handleMap;
 
 		public Handles() {
 			_nextHandle = START_HANDLE;

@@ -110,7 +110,7 @@ namespace VSCodeDebug
 
 		private static void RunSession(Stream inputStream, Stream outputStream)
 		{
-			DebugSession debugSession = new MonoDebugSession();
+			DebugSession debugSession = new NetStdDebugSession();
 			debugSession.TRACE = trace_requests;
 			debugSession.TRACE_RESPONSE = trace_responses;
 			debugSession.Start(inputStream, outputStream).Wait();
