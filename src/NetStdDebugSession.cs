@@ -160,22 +160,8 @@ namespace VSCodeDebug
 			_breakpoints = new SortedDictionary<long, MDbgBreakpoint>();
 			_catchpoints = new List<string>();
 
-			// DebuggerLoggingService.CustomLogger = new CustomLogger();
-
-			// _session.ExceptionHandler = ex => {
-			// 	return true;
-			// };
-			// FIXME LOGGING
-			// _session.LogWriter = (isStdErr, text) => {
-			// };
-
 			_session.Processes.ProcessAdded += new ProcessCollectionChangedEventHandler(Processes_ProcessAdded);
 
-
-			// FIXME IO REDIRECTION
-			// _session.OutputWriter = (isStdErr, text) => {
-			// 	SendOutput(isStdErr ? "stderr" : "stdout", text);
-			// };
 		}
 
 		public override void Initialize(Response response, dynamic args)
@@ -256,7 +242,6 @@ namespace VSCodeDebug
 			}
 
 
-			// validate argument 'env'
 			Dictionary<string, string> env = null;
 			var environmentVariables = args.env;
 			if (environmentVariables != null) {
@@ -269,26 +254,8 @@ namespace VSCodeDebug
 				}
 			}
 
-			// const string host = "127.0.0.1";
-			// int port = Utilities.FindFreePort(55555);
-
-			// string mono_path = runtimeExecutable;
-			// if (mono_path == null) {
-			// 	if (!Utilities.IsOnPath(MONO)) {
-			// 		SendErrorResponse(response, 3011, "Can't find runtime '{_runtime}' on PATH.", new { _runtime = MONO });
-			// 		return;
-			// 	}
-			// 	mono_path = MONO;     // try to find mono through PATH
-			// }
-
 
 			var cmdLine = new List<String>();
-
-			// bool debug = !getBool(args, "noDebug", false);
-			// if (debug) {
-			// 	// cmdLine.Add("--debug");
-			// 	// cmdLine.Add(String.Format("--debugger-agent=transport=dt_socket,server=y,address={0}:{1}", host, port));
-			// }
 
 			// add 'runtimeArgs'
 			if (args.runtimeArgs != null) {
@@ -346,55 +313,7 @@ namespace VSCodeDebug
 				}
 
 			} else { // internalConsole
-				List<ILocation> locationList = (List<ILocation>) null;
 
-				string debuggerVersion = VersionPolicy.GetDefaultLaunchVersion(cmdLine[0]);
-				MDbgProcess localProcess = _session.Processes.CreateLocalProcess(new CorDebugger(debuggerVersion));
-				if (localProcess == null) {
-					throw new MDbgShellException("Could not create debugging interface for runtime version " + debuggerVersion);
-				}
-				localProcess.DebugMode = DebugModeFlag.Default;
-				localProcess.NgenPolicy = NgenPolicyFlags.Default;
-				var cmdArgs = Utilities.ConcatArgs(cmdLine.Skip(1).ToArray());
-				localProcess.CreateProcess(cmdLine[0], cmdArgs, workingDirectory);
-
-				if (locationList != null)
-				{
-					foreach (ILocation location in locationList)
-					localProcess.Breakpoints.CreateBreakpoint(location, true);
-				}
-
-				// _process = new System.Diagnostics.Process();
-				// _process.StartInfo.CreateNoWindow = true;
-				// _process.StartInfo.UseShellExecute = false;
-				// _process.StartInfo.WorkingDirectory = workingDirectory;
-				// // _process.StartInfo.FileName = mono_path;
-				// _process.StartInfo.FileName = cmdLine[0];
-				// _process.StartInfo.Arguments = Utilities.ConcatArgs(cmdLine.Skip(1).ToArray());
-				// localProcess.Attach(_process.Id);
-
-				// _stdoutEOF = false;
-				// _process.StartInfo.RedirectStandardOutput = true;
-				// _process.OutputDataReceived += (object sender, System.Diagnostics.DataReceivedEventArgs e) => {
-				// 	if (e.Data == null) {
-				// 		_stdoutEOF = true;
-				// 	}
-				// 	SendOutput("stdout", e.Data);
-				// };
-
-				// _stderrEOF = false;
-				// _process.StartInfo.RedirectStandardError = true;
-				// _process.ErrorDataReceived += (object sender, System.Diagnostics.DataReceivedEventArgs e) => {
-				// 	if (e.Data == null) {
-				// 		_stderrEOF = true;
-				// 	}
-				// 	SendOutput("stderr", e.Data);
-				// };
-
-				// _process.EnableRaisingEvents = true;
-				// _process.Exited += (object sender, EventArgs e) => {
-				// 	Terminate("runtime process exited");
-				// };
 
 				if (env != null) {
 					// we cannot set the env vars on the process StartInfo because we need to set StartInfo.UseShellExecute to true at the same time.
@@ -403,15 +322,55 @@ namespace VSCodeDebug
 						System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
 					}
 				}
+				var cmdArgs = Utilities.ConcatArgs(cmdLine.Skip(1).ToArray());
+	
+				string debuggerVersion = VersionPolicy.GetDefaultLaunchVersion(cmdLine[0]);
 
-				// var cmd = string.Format("{0} {1}", _process.StartInfo.FileName, _process.StartInfo.Arguments);
-				// SendOutput("console", cmd);
+				_process = new System.Diagnostics.Process();
+				_process.StartInfo.CreateNoWindow = true;
+				_process.StartInfo.UseShellExecute = false;
+				_process.StartInfo.WorkingDirectory = workingDirectory;
+				_process.StartInfo.FileName = cmdLine[0];
+				_process.StartInfo.Arguments = Utilities.ConcatArgs(cmdLine.Skip(1).ToArray());
+
+				_stdoutEOF = false;
+				_process.StartInfo.RedirectStandardOutput = true;
+				_process.OutputDataReceived += (object sender, System.Diagnostics.DataReceivedEventArgs e) => {
+					if (e.Data == null) {
+						_stdoutEOF = true;
+					}
+					SendOutput("stdout", e.Data);
+				};
+
+				_stderrEOF = false;
+				_process.StartInfo.RedirectStandardError = true;
+				_process.ErrorDataReceived += (object sender, System.Diagnostics.DataReceivedEventArgs e) => {
+					if (e.Data == null) {
+						_stderrEOF = true;
+					}
+					SendOutput("stderr", e.Data);
+				};
+
+				_process.EnableRaisingEvents = true;
+				_process.Exited += (object sender, EventArgs e) => {
+					Terminate("runtime process exited");
+				};
+				var localProcess = _session.Processes.CreateLocalProcess(new CorDebugger(debuggerVersion));
+
+				try {
+					_process.Start();
+					localProcess.Attach(_process.Id);
+					localProcess.AsyncStop().WaitOne();
+					_process.BeginOutputReadLine();
+					_process.BeginErrorReadLine();
+				}
+				catch (Exception e) {
+					SendErrorResponse(response, 3012, "Can't launch terminal ({reason}).", new { reason = e.Message });
+					return;
+				}
 
 				try {
 					localProcess.Go().WaitOne();
-					// _process.Start();
-					// _process.BeginOutputReadLine();
-					// _process.BeginErrorReadLine();
 				}
 				catch (Exception e) {
 					SendErrorResponse(response, 3012, "Can't launch terminal ({reason}).", new { reason = e.Message });
@@ -419,16 +378,8 @@ namespace VSCodeDebug
 				}
 			}
 
-			// if (debug) {
-			// 	Connect(IPAddress.Parse(host), port);
-			// }
-
 			SendResponse(response);
 
-			// if (_process == null && !debug) {
-			// 	// we cannot track mono runtime process so terminate this session
-			// 	Terminate("cannot track mono runtime");
-			// }
 		}
 
 		public override void Attach(Response response, dynamic args)
@@ -437,31 +388,46 @@ namespace VSCodeDebug
 
 			SetExceptionBreakpoints(args.__exceptionOptions);
 
-			throw new System.NotImplementedException("Attach Not Implemented");
+			var name = getString(args, "program") ;
+			if (name == null) {
+				SendErrorResponse(response, 3007, "Property 'program' is missing or empty.");
+				return;
+			}
 
-			// // validate argument 'address'
-			// var host = getString(args, "address");
-			// if (host == null) {
-			// 	SendErrorResponse(response, 3007, "Property 'address' is missing or empty.");
+			var procs = System.Diagnostics.Process.GetProcessesByName(name);
+			if (procs == null || procs.Length == 0)
+			{
+				SendErrorResponse(response, 3007, "Process could not be found");
+				return;				
+			}
+			var proc = procs[0];
+			var pid = proc.Id;
+			var debuggerVersion = VersionPolicy.GetDefaultLaunchVersion(proc.MainModule.FileName);
+			var localProcess = _session.Processes.CreateLocalProcess(new CorDebugger(debuggerVersion));
+
+			try {
+				localProcess.Attach(proc.Id);
+				localProcess.AsyncStop().WaitOne();
+				_process = proc;
+			}
+			catch (Exception e) {
+				Console.WriteLine(e);
+				SendErrorResponse(response, 3012, "Can't attach: ({reason}).", new { reason = e.Message });
+				return;
+			}
+
+			// try {
+			// 	localProcess.Go().WaitOne();
+			// }
+			// catch (Exception e) {
+			// 	Console.WriteLine(e);
+			// 	SendErrorResponse(response, 3012, "Can't attach: ({reason}).", new { reason = e.Message });
 			// 	return;
 			// }
 
-			// // validate argument 'port'
-			// var port = getInt(args, "port", -1);
-			// if (port == -1) {
-			// 	SendErrorResponse(response, 3008, "Property 'port' is missing.");
-			// 	return;
-			// }
 
-			// IPAddress address = Utilities.ResolveIPAddress(host);
-			// if (address == null) {
-			// 	SendErrorResponse(response, 3013, "Invalid address '{address}'.", new { address = address });
-			// 	return;
-			// }
+			SendResponse(response);
 
-			// Connect(address, port);
-
-			// SendResponse(response);
 		}
 
 		public override void Disconnect(Response response, dynamic args)
@@ -472,17 +438,24 @@ namespace VSCodeDebug
 					if (_session != null) {
 						_debuggeeExecuting = true;
 						_breakpoints.Clear();
-						foreach (var bp in _session.Processes.Active.Breakpoints.UserBreakpoints)
+						if (_session.Processes.HaveActive)
 						{
-							bp.Delete();
+							var bps = _session.Processes.Active.Breakpoints.UserBreakpoints.ToArray();
+							foreach (var bp in bps)
+							{
+								bp.Delete();
+							}
+							if (_session.Processes.Active != null) {
+								_session.Processes.Active.Detach();
+								// _session.Processes.Active.Go().WaitOne();
+							}
 						}
-						_session.Processes.Active.Go().WaitOne();
-						_session = null;
+						_session = new MDbgEngine();
 					}
 				}
 
 			} else {
-				// Let's not leave dead Mono processes behind...
+				// Let's not leave dead processes behind...
 				if (_process != null) {
 					_process.Kill();
 					_process = null;
@@ -574,8 +547,7 @@ namespace VSCodeDebug
 			}
 			path = ConvertClientPathToDebugger(path);
 
-			if (!HasMonoExtension(path)) {
-				// we only support breakpoints in files mono can handle
+			if (!HasMonoExtension(path) || !_session.Processes.HaveActive) {
 				SendResponse(response, new SetBreakpointsResponseBody());
 				return;
 			}
@@ -586,9 +558,13 @@ namespace VSCodeDebug
 			for (int i = 0; i < clientLines.Length; i++) {
 				var loc = new LineNumberLocation(path, clientLines[i]);
 				var mbp = bindBreakpoint(loc);
-				modulePath = mbp.Function.Module.FileName;
-				lin.Add(mbp);
+				if (mbp != null)
+				{
+					modulePath = mbp.Function.Module.FileName;
+					lin.Add(mbp);
+				}
 			}
+
 
 			// find all breakpoints for the given path and remember their id and line number
 			var bpts = new List<Tuple<int, ManagedBoundFunctionAndOffsetLocation>>();
@@ -697,7 +673,10 @@ namespace VSCodeDebug
 
 		public ManagedBoundFunctionAndOffsetLocation bindBreakpoint(LineNumberLocation loc)
 		{
-
+			if (!_session.Processes.HaveActive || _session.Processes.Active.TemporaryDefaultManagedRuntime == null)
+			{
+				return null;
+			}
 			foreach (ManagedModule module in _session.Processes.Active.TemporaryDefaultManagedRuntime.Modules)
 			{
 				string err;
